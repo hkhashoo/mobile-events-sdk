@@ -14,12 +14,14 @@ struct Event {
     int64_t timestampMs;
 };
 
+typedef std::vector<Event> Batch;
+
 class EventQueue {
 public:
     explicit EventQueue(std::size_t maxCapacity);
 
     void push(Event event);                          // evicts oldest when at capacity
-    std::vector<Event> drain(std::size_t maxCount);
+    Batch drain(std::size_t maxCount);
     std::size_t size() const;
     bool empty() const;
 

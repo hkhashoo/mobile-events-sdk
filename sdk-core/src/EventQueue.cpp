@@ -13,9 +13,9 @@ void EventQueue::push(Event event) {
     queue_.push(std::move(event));
 }
 
-std::vector<Event> EventQueue::drain(std::size_t maxCount) {
+Batch EventQueue::drain(std::size_t maxCount) {
     std::lock_guard<std::mutex> lock(mutex_);
-    std::vector<Event> batch;
+    Batch batch;
     batch.reserve(std::min(maxCount, queue_.size()));
     while (!queue_.empty() && batch.size() < maxCount) {
         batch.push_back(std::move(queue_.front()));
