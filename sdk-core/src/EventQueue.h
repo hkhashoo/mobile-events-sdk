@@ -1,0 +1,32 @@
+#pragma once
+#include <cstddef>
+#include <cstdint>
+#include <mutex>
+#include <queue>
+#include <string>
+#include <vector>
+
+namespace eventsdk {
+
+struct Event {
+    std::string name;
+    std::string payload;   // caller-supplied JSON value (object, array, string, null, etc.)
+    int64_t timestampMs;
+};
+
+class EventQueue {
+public:
+    explicit EventQueue(std::size_t maxCapacity);
+
+    void push(Event event);                          // evicts oldest when at capacity
+    std::vector<Event> drain(std::size_t maxCount);
+    std::size_t size() const;
+    bool empty() const;
+
+private:
+    mutable std::mutex mutex_;
+    std::queue<Event> queue_;
+    std::size_t maxCapacity_;
+};
+
+} // namespace eventsdk
