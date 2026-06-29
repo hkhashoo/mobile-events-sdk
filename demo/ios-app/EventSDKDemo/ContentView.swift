@@ -1,5 +1,6 @@
 import SwiftUI
 import OSLog
+import UIKit
 
 private let logger = Logger(subsystem: "com.eventsdk.demo", category: "EventSDK")
 
@@ -58,7 +59,13 @@ final class DemoViewModel: ObservableObject {
 
     func logEvent() {
         eventCount += 1
-        let payload = "{\"count\":\(eventCount)}"
+        let device = UIDevice.current
+        let payload = "{"
+            + "\"count\":\(eventCount)"
+            + ",\"device\":\"\(device.model)\""
+            + ",\"os\":\"\(device.systemName) \(device.systemVersion)\""
+            + ",\"name\":\"\(device.name)\""
+            + "}"
         EventSDK.logEvent("button_tap", payload: payload)
         appendLog("logEvent  payload=\(payload)  queueSize=\(EventSDK.queueSize())")
     }

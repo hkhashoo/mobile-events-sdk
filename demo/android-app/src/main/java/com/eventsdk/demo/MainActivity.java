@@ -1,5 +1,6 @@
 package com.eventsdk.demo;
 
+import android.os.Build;
 import android.os.Bundle;
 import android.os.StrictMode;
 import android.util.Log;
@@ -89,7 +90,12 @@ public class MainActivity extends AppCompatActivity {
 
         btnLog.setOnClickListener(v -> {
             String name    = "button_tap";
-            String payload = "{\"count\":" + (++eventCount) + "}";
+            String payload = "{"
+                + "\"count\":"   + (++eventCount)
+                + ",\"device\":\"" + Build.MODEL + "\""
+                + ",\"os\":\"Android " + Build.VERSION.RELEASE + "\""
+                + ",\"manufacturer\":\"" + Build.MANUFACTURER + "\""
+                + "}";
             EventSDK.logEvent(name, payload);
             log("logEvent  name=" + name + "  payload=" + payload
                 + "  queueSize=" + EventSDK.queueSize());
