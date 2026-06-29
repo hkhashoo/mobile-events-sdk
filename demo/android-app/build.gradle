@@ -1,0 +1,27 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.eventsdk.demo'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.eventsdk.demo'
+        minSdk 21
+        targetSdk 34
+        versionCode 1
+        versionName '1.0'
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+        }
+    }
+}
+
+dependencies {
+    implementation project(':sdk-android')
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+}
