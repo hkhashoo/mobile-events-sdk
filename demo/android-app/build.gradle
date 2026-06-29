@@ -6,17 +6,28 @@ android {
     namespace 'com.eventsdk.demo'
     compileSdk 34
 
+    buildFeatures {
+        buildConfig true
+    }
+
     defaultConfig {
         applicationId 'com.eventsdk.demo'
         minSdk 21
         targetSdk 34
         versionCode 1
         versionName '1.0'
+
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+
+        buildConfigField 'String', 'FLUSH_URL',
+            '"https://webhook.site/45eacb0e-3fe8-44ef-af86-0ffd04dba99f"'
     }
 
     buildTypes {
         release {
             minifyEnabled false
+            buildConfigField 'String', 'FLUSH_URL',
+                '"https://webhook.site/45eacb0e-3fe8-44ef-af86-0ffd04dba99f"'
         }
     }
 }
@@ -24,4 +35,8 @@ android {
 dependencies {
     implementation project(':sdk-android')
     implementation 'androidx.appcompat:appcompat:1.6.1'
+
+    androidTestImplementation 'androidx.test.ext:junit:1.1.5'
+    androidTestImplementation 'androidx.test:runner:1.5.2'
+    androidTestImplementation 'androidx.test:rules:1.5.0'
 }
