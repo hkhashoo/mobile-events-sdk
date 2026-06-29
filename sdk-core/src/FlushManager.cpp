@@ -20,6 +20,37 @@ static std::string jsonEscape(const std::string& s) {
 FlushManager::FlushManager(EventQueue& queue, const Config& config)
     : queue_(queue), config_(config) {}
 
+FlushManager::~FlushManager() {
+    stopTimer();
+}
+
+void FlushManager::startTimer() {
+    if (config_.flushIntervalSeconds <= 0) return;
+    if (timerThread_.joinable()) return;   // already running
+
+    stopTimer_ = false;
+    timerThread_ = std::thread([this]() {
+        while (true) {
+            std::unique_lock<std::mutex> lock(timerMutex_);
+            bool stopped = timerCv_.wait_for(lock,
+                std::chrono::seconds(config_.flushIntervalSeconds),
+                [this] { return stopTimer_; });
+            if (stopped) break;
+            lock.unlock();   // release before potentially-slow transport call
+            flush();
+        }
+    });
+}
+
+void FlushManager::stopTimer() {
+    {
+        std::lock_guard<std::mutex> lock(timerMutex_);
+        stopTimer_ = true;
+    }
+    timerCv_.notify_one();
+    if (timerThread_.joinable()) timerThread_.join();
+}
+
 void FlushManager::push(Event event) {
     queue_.push(std::move(event));
 

@@ -70,17 +70,18 @@ extern "C" {
 JNIEXPORT void JNICALL
 Java_com_eventsdk_EventSDK_nativeInit(JNIEnv* env, jclass /*clazz*/,
     jstring endpoint, jint batchSize, jint maxQueueCapacity, jstring storageDir,
-    jboolean autoFlush, jint autoFlushThreshold)
+    jboolean autoFlush, jint autoFlushThreshold, jint flushIntervalSeconds)
 {
     std::lock_guard<std::mutex> lock(gStateMutex);
 
     auto state = std::make_unique<SDKState>();
-    state->config.endpoint            = jstringToStd(env, endpoint);
-    state->config.batchSize           = static_cast<std::size_t>(batchSize);
-    state->config.maxQueueCapacity    = static_cast<std::size_t>(maxQueueCapacity);
-    state->config.storageDir          = jstringToStd(env, storageDir);
-    state->config.autoFlush           = autoFlush == JNI_TRUE;
-    state->config.autoFlushThreshold  = static_cast<std::size_t>(autoFlushThreshold);
+    state->config.endpoint             = jstringToStd(env, endpoint);
+    state->config.batchSize            = static_cast<std::size_t>(batchSize);
+    state->config.maxQueueCapacity     = static_cast<std::size_t>(maxQueueCapacity);
+    state->config.storageDir           = jstringToStd(env, storageDir);
+    state->config.autoFlush            = autoFlush == JNI_TRUE;
+    state->config.autoFlushThreshold   = static_cast<std::size_t>(autoFlushThreshold);
+    state->config.flushIntervalSeconds = static_cast<int>(flushIntervalSeconds);
 
     state->queue        = std::make_unique<eventsdk::EventQueue>(state->config.maxQueueCapacity);
     state->store        = std::make_unique<eventsdk::EventStore>(state->config.storageDir);
@@ -122,6 +123,8 @@ Java_com_eventsdk_EventSDK_nativeSetTransport(JNIEnv* env, jclass /*clazz*/, job
 
     jobject   ref      = gState->transportObj;
     jmethodID methodId = gState->transportMethodId;
+
+    gState->flushManager->startTimer();
 
     gState->flushManager->setTransport(
         [ref, methodId](const std::string& url, const std::string& body) -> bool {
@@ -184,6 +187,7 @@ Java_com_eventsdk_EventSDK_nativeShutdown(JNIEnv* env, jclass /*clazz*/)
 {
     std::lock_guard<std::mutex> lock(gStateMutex);
     if (!gState) return;
+    gState->flushManager->stopTimer();   // join timer thread before teardown
     if (gState->transportObj) {
         env->DeleteGlobalRef(gState->transportObj);
         gState->transportObj = nullptr;

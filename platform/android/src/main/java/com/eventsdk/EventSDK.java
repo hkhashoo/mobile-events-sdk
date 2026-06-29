@@ -19,7 +19,8 @@ public final class EventSDK {
             config.maxQueueCapacity,
             config.storageDir,
             config.autoFlush,
-            config.autoFlushThreshold
+            config.autoFlushThreshold,
+            config.flushIntervalSeconds
         );
     }
 
@@ -49,7 +50,8 @@ public final class EventSDK {
 
     private static native void nativeInit(String endpoint, int batchSize,
                                           int maxQueueCapacity, String storageDir,
-                                          boolean autoFlush, int autoFlushThreshold);
+                                          boolean autoFlush, int autoFlushThreshold,
+                                          int flushIntervalSeconds);
     private static native void nativeSetTransport(Transport transport);
     private static native void nativeLogEvent(String name, String payloadJson);
     private static native void nativeFlush();

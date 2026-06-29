@@ -50,8 +50,9 @@ public class MainActivity extends AppCompatActivity {
         );
         config.batchSize           = 3;
         config.maxQueueCapacity    = 100;
-        config.autoFlush           = true;
-        config.autoFlushThreshold  = 3;   // auto-flush every 3 events
+        config.autoFlush            = true;
+        config.autoFlushThreshold   = 3;    // auto-flush every 3 events
+        config.flushIntervalSeconds = 30;   // also flush every 30s regardless
 
         EventSDK.init(config);
 

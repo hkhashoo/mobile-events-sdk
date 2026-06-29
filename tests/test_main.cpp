@@ -1,4 +1,6 @@
+#include <atomic>
 #include <cassert>
+#include <chrono>
 #include <iostream>
 #include <string>
 #include <thread>
@@ -252,6 +254,30 @@ void test_autoflush_disabled() {
     ASSERT(q.size() == 10, "all events remain in queue");
 }
 
+void test_timer_flush() {
+    auto cfg = makeConfig(10);
+    cfg.flushIntervalSeconds = 1;
+
+    EventQueue q(cfg.maxQueueCapacity);
+    FlushManager fm(q, cfg);
+
+    std::atomic<int> flushCount{0};
+    fm.setTransport([&](const std::string&, const std::string&) {
+        ++flushCount;
+        return true;
+    });
+
+    fm.push({"e1", "{}", 1});
+    fm.push({"e2", "{}", 2});
+    fm.startTimer();
+
+    std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+    fm.stopTimer();
+
+    ASSERT(flushCount >= 1, "timer triggered at least one flush");
+    ASSERT(q.empty(),       "queue drained by timer flush");
+}
+
 void test_autoflush_threshold_zero_uses_batchsize() {
     auto cfg = makeConfig(3);
     cfg.autoFlush          = true;
@@ -292,6 +318,7 @@ int main() {
     test_flush_with_transport_succeeds();
     test_flush_respects_batch_size();
     test_flush_empty_queue_is_noop();
+    test_timer_flush();
     test_autoflush_triggers_at_threshold();
     test_autoflush_disabled();
     test_autoflush_threshold_zero_uses_batchsize();
