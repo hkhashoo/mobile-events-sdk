@@ -21,7 +21,7 @@ jobs:
         run: cmake --build build --parallel
 
       - name: Run tests
-        run: ./build/tests/event_sdk_tests
+        run: ./build/eventsdk_tests
 
   # ── Android AAR ───────────────────────────────────────────────────────────────
   android-build:
@@ -36,17 +36,17 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
       - name: Install NDK
         run: sdkmanager "ndk;27.0.12077973"
 
-      - name: Make gradlew executable
-        run: chmod +x gradlew
-
       - name: Build SDK AAR
-        run: ./gradlew :sdk-android:assembleRelease
+        run: gradle :sdk-android:assembleRelease
         env:
           ANDROID_NDK_HOME: ${{ env.ANDROID_SDK_ROOT }}/ndk/27.0.12077973
 
@@ -86,4 +86,4 @@ jobs:
         run: |
           cmake -B build-mac -DCMAKE_BUILD_TYPE=Debug
           cmake --build build-mac --parallel
-          ./build-mac/tests/event_sdk_tests
+          ./build-mac/eventsdk_tests
