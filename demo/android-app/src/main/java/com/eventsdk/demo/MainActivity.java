@@ -45,11 +45,13 @@ public class MainActivity extends AppCompatActivity {
 
     private void initSdk() {
         EventSDKConfig config = new EventSDKConfig(
-            "https://httpbin.org/post",          // public echo endpoint
+            BuildConfig.FLUSH_URL,
             getFilesDir().getAbsolutePath()
         );
-        config.batchSize        = 3;
-        config.maxQueueCapacity = 100;
+        config.batchSize           = 3;
+        config.maxQueueCapacity    = 100;
+        config.autoFlush           = true;
+        config.autoFlushThreshold  = 3;   // auto-flush every 3 events
 
         EventSDK.init(config);
 

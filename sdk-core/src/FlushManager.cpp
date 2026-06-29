@@ -20,6 +20,20 @@ static std::string jsonEscape(const std::string& s) {
 FlushManager::FlushManager(EventQueue& queue, const Config& config)
     : queue_(queue), config_(config) {}
 
+void FlushManager::push(Event event) {
+    queue_.push(std::move(event));
+
+    if (!config_.autoFlush) return;
+
+    std::size_t threshold = config_.autoFlushThreshold > 0
+        ? config_.autoFlushThreshold
+        : config_.batchSize;
+
+    if (queue_.size() >= threshold) {
+        flush();
+    }
+}
+
 void FlushManager::setTransport(Transport transport) {
     transport_ = std::move(transport);
 }

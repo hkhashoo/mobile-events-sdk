@@ -209,6 +209,71 @@ void test_flush_empty_queue_is_noop() {
     ASSERT(cbCalled, "callback invoked for empty flush");
 }
 
+// ── FlushManager::push + auto-flush ──────────────────────────────────────────
+
+void test_autoflush_triggers_at_threshold() {
+    auto cfg = makeConfig(5);
+    cfg.autoFlush          = true;
+    cfg.autoFlushThreshold = 3;
+
+    EventQueue q(cfg.maxQueueCapacity);
+    FlushManager fm(q, cfg);
+
+    int flushCount = 0;
+    fm.setTransport([&](const std::string&, const std::string&) {
+        ++flushCount;
+        return true;
+    });
+
+    fm.push({"e1", "{}", 1});
+    fm.push({"e2", "{}", 2});
+    ASSERT(flushCount == 0, "no auto-flush below threshold");
+
+    fm.push({"e3", "{}", 3});   // threshold reached
+    ASSERT(flushCount == 1,  "auto-flush triggered at threshold=3");
+    ASSERT(q.empty(),        "queue drained after auto-flush");
+}
+
+void test_autoflush_disabled() {
+    auto cfg = makeConfig(5);
+    cfg.autoFlush = false;
+
+    EventQueue q(cfg.maxQueueCapacity);
+    FlushManager fm(q, cfg);
+
+    bool flushed = false;
+    fm.setTransport([&](const std::string&, const std::string&) {
+        flushed = true;
+        return true;
+    });
+
+    for (int i = 0; i < 10; ++i) fm.push({"e", "{}", i});
+    ASSERT(!flushed,       "no auto-flush when disabled");
+    ASSERT(q.size() == 10, "all events remain in queue");
+}
+
+void test_autoflush_threshold_zero_uses_batchsize() {
+    auto cfg = makeConfig(3);
+    cfg.autoFlush          = true;
+    cfg.autoFlushThreshold = 0;   // should fall back to batchSize=3
+
+    EventQueue q(cfg.maxQueueCapacity);
+    FlushManager fm(q, cfg);
+
+    int flushCount = 0;
+    fm.setTransport([&](const std::string&, const std::string&) {
+        ++flushCount;
+        return true;
+    });
+
+    fm.push({"e1", "{}", 1});
+    fm.push({"e2", "{}", 2});
+    ASSERT(flushCount == 0, "no flush at 2 events with batchSize=3");
+
+    fm.push({"e3", "{}", 3});
+    ASSERT(flushCount == 1, "auto-flush at batchSize=3 when threshold=0");
+}
+
 // ── main ─────────────────────────────────────────────────────────────────────
 
 int main() {
@@ -227,6 +292,9 @@ int main() {
     test_flush_with_transport_succeeds();
     test_flush_respects_batch_size();
     test_flush_empty_queue_is_noop();
+    test_autoflush_triggers_at_threshold();
+    test_autoflush_disabled();
+    test_autoflush_threshold_zero_uses_batchsize();
 
     std::cout << '\n' << passed << " passed, " << failed << " failed\n";
     return failed > 0 ? 1 : 0;

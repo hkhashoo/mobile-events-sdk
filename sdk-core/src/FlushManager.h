@@ -22,6 +22,9 @@ public:
     using Transport = std::function<bool(const std::string& url, const std::string& body)>;
     void setTransport(Transport transport);
 
+    // Push an event and auto-flush if autoFlush is enabled and threshold is reached.
+    void push(Event event);
+
     // Drain up to config.batchSize events and POST them. If no transport is set,
     // events are returned to the queue unmodified.
     void flush(FlushCallback callback = nullptr);

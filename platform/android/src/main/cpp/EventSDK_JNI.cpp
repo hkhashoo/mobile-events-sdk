@@ -69,22 +69,25 @@ extern "C" {
 
 JNIEXPORT void JNICALL
 Java_com_eventsdk_EventSDK_nativeInit(JNIEnv* env, jclass /*clazz*/,
-    jstring endpoint, jint batchSize, jint maxQueueCapacity, jstring storageDir)
+    jstring endpoint, jint batchSize, jint maxQueueCapacity, jstring storageDir,
+    jboolean autoFlush, jint autoFlushThreshold)
 {
     std::lock_guard<std::mutex> lock(gStateMutex);
 
     auto state = std::make_unique<SDKState>();
-    state->config.endpoint         = jstringToStd(env, endpoint);
-    state->config.batchSize        = static_cast<std::size_t>(batchSize);
-    state->config.maxQueueCapacity = static_cast<std::size_t>(maxQueueCapacity);
-    state->config.storageDir       = jstringToStd(env, storageDir);
+    state->config.endpoint            = jstringToStd(env, endpoint);
+    state->config.batchSize           = static_cast<std::size_t>(batchSize);
+    state->config.maxQueueCapacity    = static_cast<std::size_t>(maxQueueCapacity);
+    state->config.storageDir          = jstringToStd(env, storageDir);
+    state->config.autoFlush           = autoFlush == JNI_TRUE;
+    state->config.autoFlushThreshold  = static_cast<std::size_t>(autoFlushThreshold);
 
     state->queue        = std::make_unique<eventsdk::EventQueue>(state->config.maxQueueCapacity);
     state->store        = std::make_unique<eventsdk::EventStore>(state->config.storageDir);
     state->flushManager = std::make_unique<eventsdk::FlushManager>(*state->queue, state->config);
 
     gState = std::move(state);
-    LOGD("init: endpoint=%s batchSize=%d", state->config.endpoint.c_str(), (int)batchSize);
+    LOGD("init: endpoint=%s batchSize=%d", gState->config.endpoint.c_str(), (int)batchSize);
 }
 
 JNIEXPORT void JNICALL
@@ -154,7 +157,7 @@ Java_com_eventsdk_EventSDK_nativeLogEvent(JNIEnv* env, jclass /*clazz*/,
     e.payload     = jstringToStd(env, payloadJson);
     e.timestampMs = static_cast<int64_t>(nowMs);
 
-    gState->queue->push(std::move(e));
+    gState->flushManager->push(std::move(e));
 }
 
 JNIEXPORT void JNICALL

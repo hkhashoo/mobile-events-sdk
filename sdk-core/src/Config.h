@@ -10,6 +10,8 @@ struct Config {
     int flushIntervalSeconds{30};
     std::size_t maxQueueCapacity{1000};
     std::string storageDir;
+    bool        autoFlush{false};
+    std::size_t autoFlushThreshold{0};  // 0 = use batchSize
 };
 
 } // namespace eventsdk
