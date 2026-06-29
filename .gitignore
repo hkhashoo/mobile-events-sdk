@@ -1,5 +1,8 @@
 build/
 .cxx/
+DerivedData/
+*.xcuserstate
+xcuserdata/
 *.o
 *.a
 *.so
@@ -11,7 +14,7 @@ Makefile
 .DS_Store
 .idea/
 .vscode/
-*.xcodeproj/
+# *.xcodeproj committed intentionally for demo/ios-app
 *.xcworkspace/
 DerivedData/
 .gradle/

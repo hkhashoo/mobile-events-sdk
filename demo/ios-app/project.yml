@@ -1,0 +1,50 @@
+name: EventSDKDemo
+options:
+  bundleIdPrefix: com.eventsdk
+  deploymentTarget:
+    iOS: "15.0"
+  xcodeVersion: "15"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "5.9"
+    CLANG_CXX_LANGUAGE_STANDARD: c++17
+    CLANG_CXX_LIBRARY: libc++
+    SWIFT_OBJC_BRIDGING_HEADER: EventSDKDemo/EventSDKDemo-Bridging-Header.h
+    HEADER_SEARCH_PATHS:
+      - $(PROJECT_DIR)/../../sdk-core/src
+      - $(PROJECT_DIR)/../../platform/ios
+    GCC_PREPROCESSOR_DEFINITIONS:
+      - $(inherited)
+
+targets:
+  EventSDKDemo:
+    type: application
+    platform: iOS
+    sources:
+      - path: EventSDKDemo
+        includes:
+          - "**/*.swift"
+          - "**/*.h"
+          - "**/*.mm"
+          - "**/*.cpp"
+      - path: ../../platform/ios
+        includes:
+          - EventSDK.h
+          - EventSDK.mm
+        buildPhase: sources
+      - path: ../../sdk-core/src
+        includes:
+          - "*.h"
+          - "*.cpp"
+        buildPhase: sources
+    info:
+      path: EventSDKDemo/Info.plist
+      properties:
+        CFBundleDisplayName: EventSDK Demo
+        UILaunchScreen: {}
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.eventsdk.demo
+        CODE_SIGN_STYLE: Automatic
