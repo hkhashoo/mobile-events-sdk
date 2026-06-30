@@ -142,6 +142,35 @@ The C++ lambda captures `copied` by value. ARC's retain/release on the block obj
 
 ---
 
+## Failure Modes
+
+| Failure | AtMostOnce behavior | AtLeastOnce behavior | Detection |
+|---|---|---|---|
+| Transport returns false | Batch silently discarded | Batch stays on disk; re-queued on restart | `HealthMetrics.transportFailures` |
+| Process killed during flush (pre-send) | Events lost | Events on disk; recovered via `loadPersistedEvents()` | Drop in event count at server |
+| Process killed during flush (post-send, pre-clear) | — | Events re-sent on restart (duplicate delivery) | Server-side deduplication by event ts |
+| Disk full on `persist()` | No effect (not called) | `persist()` throws; events remain in-memory queue | `std::ofstream` failure (currently silent) |
+| Queue at `maxQueueCapacity` | Oldest event dropped | Oldest event dropped | `HealthMetrics.eventsDropped` |
+| `flushIntervalSeconds = 0` | Timer thread never starts | Same | Config validation |
+| `setTransport` never called | `flush()` returns events to queue | Same | `HealthMetrics.transportFailures` (0, no calls) |
+| Duplicate `init()` call | Previous state destroyed | Previous state destroyed + store reloaded | Avoid via app lifecycle |
+
+### Known limitation: `gStateMutex` held during flush (Android)
+
+`nativeFlush` and the timer both hold `gStateMutex` for the full transport call. This means `logEvent()` blocks during an HTTP round-trip.
+
+**Fix** (not yet implemented): snapshot `std::shared_ptr<SDKState>` under the lock, release it, then call transport outside:
+```cpp
+std::shared_ptr<SDKState> snap;
+{
+    std::lock_guard<std::mutex> lock(gStateMutex);
+    snap = gState;            // O(1), no copy
+}
+snap->flushManager->flush();  // lock released, logEvent() unblocked
+```
+
+---
+
 ## What Was Left Out (and Why)
 
 | Feature | Reason omitted |
