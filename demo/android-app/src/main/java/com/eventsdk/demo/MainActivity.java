@@ -1,5 +1,6 @@
 package com.eventsdk.demo;
 
+import android.content.ComponentCallbacks2;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.StrictMode;
@@ -56,6 +57,13 @@ public class MainActivity extends AppCompatActivity {
         config.flushIntervalSeconds = 30;   // also flush every 30s regardless
 
         EventSDK.init(config);
+
+        EventSDK.setHealthListener((queued, dropped, flushCount, failures,
+                                    latencyMs, bytesSent, utilPct) ->
+            log(String.format("health: queued=%d dropped=%d flushes=%d failures=%d "
+                    + "latency=%.1fms sent=%dB util=%.0f%%",
+                    queued, dropped, flushCount, failures, latencyMs, bytesSent, utilPct))
+        );
 
         EventSDK.setTransport((url, body) -> {
             try {
@@ -117,6 +125,15 @@ public class MainActivity extends AppCompatActivity {
         Log.d(TAG, msg);
         logView.append("\n" + msg);
         scrollView.post(() -> scrollView.fullScroll(ScrollView.FOCUS_DOWN));
+    }
+
+    @Override
+    public void onTrimMemory(int level) {
+        super.onTrimMemory(level);
+        if (level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_CRITICAL) {
+            log("memory pressure (level=" + level + ") — flushing events");
+            EventSDK.onMemoryPressure();
+        }
     }
 
     @Override

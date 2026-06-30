@@ -6,10 +6,17 @@ public final class EventSDK {
         System.loadLibrary("eventsdk_jni");
     }
 
-    // Platform-supplied HTTP transport.
-    // post() must be safe to call from any thread.
+    // Platform-supplied HTTP transport. post() must be safe to call from any thread.
     public interface Transport {
         boolean post(String url, String body);
+    }
+
+    // Emitted after every flush. All fields are cumulative since SDK init.
+    public interface HealthListener {
+        void onMetrics(long eventsQueued, long eventsDropped,
+                       long flushCount,  long transportFailures,
+                       double lastFlushLatencyMs, long bytesSent,
+                       double queueUtilizationPct);
     }
 
     public static void init(EventSDKConfig config) {
@@ -20,13 +27,18 @@ public final class EventSDK {
             config.storageDir,
             config.autoFlush,
             config.autoFlushThreshold,
-            config.flushIntervalSeconds
+            config.flushIntervalSeconds,
+            config.atLeastOnce
         );
     }
 
-    // Register the HTTP transport before calling flush().
     public static void setTransport(Transport transport) {
         nativeSetTransport(transport);
+    }
+
+    // Register a listener to receive health metrics after every flush.
+    public static void setHealthListener(HealthListener listener) {
+        nativeSetHealthListener(listener);
     }
 
     // payloadJson must be a valid JSON value: object, array, string, number, or null.
@@ -35,6 +47,11 @@ public final class EventSDK {
     }
 
     public static void flush() {
+        nativeFlush();
+    }
+
+    // Call from Activity.onTrimMemory(TRIM_MEMORY_RUNNING_CRITICAL) to flush under pressure.
+    public static void onMemoryPressure() {
         nativeFlush();
     }
 
@@ -51,8 +68,9 @@ public final class EventSDK {
     private static native void nativeInit(String endpoint, int batchSize,
                                           int maxQueueCapacity, String storageDir,
                                           boolean autoFlush, int autoFlushThreshold,
-                                          int flushIntervalSeconds);
+                                          int flushIntervalSeconds, boolean atLeastOnce);
     private static native void nativeSetTransport(Transport transport);
+    private static native void nativeSetHealthListener(HealthListener listener);
     private static native void nativeLogEvent(String name, String payloadJson);
     private static native void nativeFlush();
     private static native int  nativeQueueSize();

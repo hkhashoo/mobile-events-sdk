@@ -9,6 +9,7 @@
 #include "EventQueue.h"
 #include "EventStore.h"
 #include "FlushManager.h"
+#include "HealthMetrics.h"
 
 #define LOG_TAG "EventSDK"
 #define LOGD(...) __android_log_print(ANDROID_LOG_DEBUG, LOG_TAG, __VA_ARGS__)
@@ -22,8 +23,10 @@ struct SDKState {
     std::unique_ptr<eventsdk::EventQueue>    queue;
     std::unique_ptr<eventsdk::EventStore>    store;
     std::unique_ptr<eventsdk::FlushManager>  flushManager;
-    jobject    transportObj      = nullptr;   // JNI global ref
-    jmethodID  transportMethodId = nullptr;
+    jobject    transportObj        = nullptr;   // JNI global ref
+    jmethodID  transportMethodId   = nullptr;
+    jobject    healthListenerObj   = nullptr;   // JNI global ref
+    jmethodID  healthListenerMid   = nullptr;
 };
 
 static std::unique_ptr<SDKState> gState;
@@ -42,7 +45,7 @@ static std::string jstringToStd(JNIEnv* env, jstring jstr) {
     if (!jstr) return "";
     const char* chars = env->GetStringUTFChars(jstr, nullptr);
     std::string result(chars);
-    env->ReleaseStringUTFChars(jstr, chars);   // must always release
+    env->ReleaseStringUTFChars(jstr, chars);
     return result;
 }
 
@@ -55,7 +58,7 @@ static void throwRuntime(JNIEnv* env, const char* msg) {
 // Returns true if we attached (caller must detach).
 static bool attachIfNeeded(JNIEnv** outEnv) {
     jint res = gJvm->GetEnv(reinterpret_cast<void**>(outEnv), JNI_VERSION_1_6);
-    if (res == JNI_OK)       return false;   // already attached
+    if (res == JNI_OK)        return false;
     if (res == JNI_EDETACHED) {
         gJvm->AttachCurrentThread(outEnv, nullptr);
         return true;
@@ -70,7 +73,8 @@ extern "C" {
 JNIEXPORT void JNICALL
 Java_com_eventsdk_EventSDK_nativeInit(JNIEnv* env, jclass /*clazz*/,
     jstring endpoint, jint batchSize, jint maxQueueCapacity, jstring storageDir,
-    jboolean autoFlush, jint autoFlushThreshold, jint flushIntervalSeconds)
+    jboolean autoFlush, jint autoFlushThreshold, jint flushIntervalSeconds,
+    jboolean atLeastOnce)
 {
     std::lock_guard<std::mutex> lock(gStateMutex);
 
@@ -82,13 +86,19 @@ Java_com_eventsdk_EventSDK_nativeInit(JNIEnv* env, jclass /*clazz*/,
     state->config.autoFlush            = autoFlush == JNI_TRUE;
     state->config.autoFlushThreshold   = static_cast<std::size_t>(autoFlushThreshold);
     state->config.flushIntervalSeconds = static_cast<int>(flushIntervalSeconds);
+    state->config.deliveryMode = (atLeastOnce == JNI_TRUE)
+        ? eventsdk::DeliveryMode::AtLeastOnce
+        : eventsdk::DeliveryMode::AtMostOnce;
 
     state->queue        = std::make_unique<eventsdk::EventQueue>(state->config.maxQueueCapacity);
     state->store        = std::make_unique<eventsdk::EventStore>(state->config.storageDir);
     state->flushManager = std::make_unique<eventsdk::FlushManager>(*state->queue, state->config);
+    state->flushManager->setStore(state->store.get());
+    state->flushManager->loadPersistedEvents();
 
     gState = std::move(state);
-    LOGD("init: endpoint=%s batchSize=%d", gState->config.endpoint.c_str(), (int)batchSize);
+    LOGD("init: endpoint=%s batchSize=%d atLeastOnce=%d",
+         gState->config.endpoint.c_str(), (int)batchSize, (int)(atLeastOnce == JNI_TRUE));
 }
 
 JNIEXPORT void JNICALL
@@ -97,7 +107,6 @@ Java_com_eventsdk_EventSDK_nativeSetTransport(JNIEnv* env, jclass /*clazz*/, job
     std::lock_guard<std::mutex> lock(gStateMutex);
     if (!gState) { throwRuntime(env, "EventSDK not initialized"); return; }
 
-    // Delete old global ref before replacing
     if (gState->transportObj) {
         env->DeleteGlobalRef(gState->transportObj);
         gState->transportObj = nullptr;
@@ -128,8 +137,8 @@ Java_com_eventsdk_EventSDK_nativeSetTransport(JNIEnv* env, jclass /*clazz*/, job
 
     gState->flushManager->setTransport(
         [ref, methodId](const std::string& url, const std::string& body) -> bool {
-            JNIEnv* callEnv   = nullptr;
-            bool    attached  = attachIfNeeded(&callEnv);
+            JNIEnv* callEnv  = nullptr;
+            bool    attached = attachIfNeeded(&callEnv);
 
             jstring jUrl  = callEnv->NewStringUTF(url.c_str());
             jstring jBody = callEnv->NewStringUTF(body.c_str());
@@ -141,6 +150,54 @@ Java_com_eventsdk_EventSDK_nativeSetTransport(JNIEnv* env, jclass /*clazz*/, job
 
             if (attached) gJvm->DetachCurrentThread();
             return ok == JNI_TRUE;
+        }
+    );
+}
+
+JNIEXPORT void JNICALL
+Java_com_eventsdk_EventSDK_nativeSetHealthListener(JNIEnv* env, jclass /*clazz*/, jobject listener)
+{
+    std::lock_guard<std::mutex> lock(gStateMutex);
+    if (!gState) { throwRuntime(env, "EventSDK not initialized"); return; }
+
+    if (gState->healthListenerObj) {
+        env->DeleteGlobalRef(gState->healthListenerObj);
+        gState->healthListenerObj = nullptr;
+    }
+
+    if (!listener) {
+        gState->flushManager->setHealthCallback(nullptr);
+        return;
+    }
+
+    gState->healthListenerObj = env->NewGlobalRef(listener);
+    jclass cls = env->GetObjectClass(listener);
+    // signature: void onMetrics(long,long,long,long,double,long,double)
+    gState->healthListenerMid = env->GetMethodID(cls, "onMetrics", "(JJJJDJD)V");
+
+    if (!gState->healthListenerMid) {
+        throwRuntime(env, "HealthListener must implement onMetrics(long,long,long,long,double,long,double)");
+        return;
+    }
+
+    jobject   ref = gState->healthListenerObj;
+    jmethodID mid = gState->healthListenerMid;
+
+    gState->flushManager->setHealthCallback(
+        [ref, mid](const eventsdk::HealthMetrics& m) {
+            JNIEnv* callEnv  = nullptr;
+            bool    attached = attachIfNeeded(&callEnv);
+
+            callEnv->CallVoidMethod(ref, mid,
+                (jlong)m.eventsQueued,
+                (jlong)m.eventsDropped,
+                (jlong)m.flushCount,
+                (jlong)m.transportFailures,
+                (jdouble)m.lastFlushLatencyMs,
+                (jlong)m.bytesSent,
+                (jdouble)m.queueUtilizationPct);
+
+            if (attached) gJvm->DetachCurrentThread();
         }
     );
 }
@@ -169,7 +226,7 @@ Java_com_eventsdk_EventSDK_nativeFlush(JNIEnv* env, jclass /*clazz*/)
     // Lock held for the full flush.
     // Known limitation: logEvent() blocks during HTTP round-trip.
     // Fix: shared_ptr<SDKState> + lock only around state access, not transport call.
-    // Left as-is for Weekend-2 demo; documented in DESIGN.md.
+    // Left as-is for demo; documented in DESIGN.md.
     std::lock_guard<std::mutex> lock(gStateMutex);
     if (!gState) { throwRuntime(env, "EventSDK not initialized"); return; }
     gState->flushManager->flush();
@@ -187,10 +244,14 @@ Java_com_eventsdk_EventSDK_nativeShutdown(JNIEnv* env, jclass /*clazz*/)
 {
     std::lock_guard<std::mutex> lock(gStateMutex);
     if (!gState) return;
-    gState->flushManager->stopTimer();   // join timer thread before teardown
+    gState->flushManager->stopTimer();
     if (gState->transportObj) {
         env->DeleteGlobalRef(gState->transportObj);
         gState->transportObj = nullptr;
+    }
+    if (gState->healthListenerObj) {
+        env->DeleteGlobalRef(gState->healthListenerObj);
+        gState->healthListenerObj = nullptr;
     }
     gState.reset();
     LOGD("shutdown complete");
