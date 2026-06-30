@@ -2,6 +2,7 @@
 // The .mm extension lets us #include C++ headers directly — no JNI bridge needed.
 
 #import "EventSDK.h"
+#import <UIKit/UIKit.h>
 
 #include <chrono>
 #include <memory>
@@ -11,6 +12,7 @@
 #include "EventQueue.h"
 #include "EventStore.h"
 #include "FlushManager.h"
+#include "HealthMetrics.h"
 
 // ── Singleton state ───────────────────────────────────────────────────────────
 
@@ -19,6 +21,7 @@ struct IOSSDKState {
     std::unique_ptr<eventsdk::EventQueue>    queue;
     std::unique_ptr<eventsdk::EventStore>    store;
     std::unique_ptr<eventsdk::FlushManager>  flushManager;
+    __strong id                              memoryObserver{nil};  // NSNotification token
 };
 
 static std::unique_ptr<IOSSDKState> gState;
@@ -38,6 +41,7 @@ static std::mutex                   gStateMutex;
         _autoFlush            = NO;
         _autoFlushThreshold   = 0;
         _flushIntervalSeconds = 0;
+        _deliveryMode         = EventSDKDeliveryModeAtMostOnce;
     }
     return self;
 }
@@ -59,10 +63,25 @@ static std::mutex                   gStateMutex;
     state->config.autoFlush            = config.autoFlush == YES;
     state->config.autoFlushThreshold   = static_cast<std::size_t>(config.autoFlushThreshold);
     state->config.flushIntervalSeconds = static_cast<int>(config.flushIntervalSeconds);
+    state->config.deliveryMode = (config.deliveryMode == EventSDKDeliveryModeAtLeastOnce)
+        ? eventsdk::DeliveryMode::AtLeastOnce
+        : eventsdk::DeliveryMode::AtMostOnce;
 
     state->queue        = std::make_unique<eventsdk::EventQueue>(state->config.maxQueueCapacity);
     state->store        = std::make_unique<eventsdk::EventStore>(state->config.storageDir);
     state->flushManager = std::make_unique<eventsdk::FlushManager>(*state->queue, state->config);
+    state->flushManager->setStore(state->store.get());
+    state->flushManager->loadPersistedEvents();
+
+    // Flush immediately on memory pressure — better to send now than lose events.
+    id observer = [[NSNotificationCenter defaultCenter]
+        addObserverForName:UIApplicationDidReceiveMemoryWarningNotification
+        object:nil
+        queue:nil
+        usingBlock:^(NSNotification *) {
+            [EventSDK flush];
+        }];
+    state->memoryObserver = observer;
 
     gState = std::move(state);
 }
@@ -88,6 +107,32 @@ static std::mutex                   gStateMutex;
     );
 
     gState->flushManager->startTimer();
+}
+
++ (void)setHealthCallback:(nullable EventSDKHealthCallback)callback {
+    std::lock_guard<std::mutex> lock(gStateMutex);
+    if (!gState) return;
+
+    if (!callback) {
+        gState->flushManager->setHealthCallback(nullptr);
+        return;
+    }
+
+    EventSDKHealthCallback callbackCopy = [callback copy];
+
+    gState->flushManager->setHealthCallback(
+        [callbackCopy](const eventsdk::HealthMetrics& m) {
+            EventSDKHealthMetrics metrics;
+            metrics.eventsQueued       = static_cast<NSUInteger>(m.eventsQueued);
+            metrics.eventsDropped      = static_cast<NSUInteger>(m.eventsDropped);
+            metrics.flushCount         = static_cast<NSUInteger>(m.flushCount);
+            metrics.transportFailures  = static_cast<NSUInteger>(m.transportFailures);
+            metrics.lastFlushLatencyMs = m.lastFlushLatencyMs;
+            metrics.bytesSent          = static_cast<NSUInteger>(m.bytesSent);
+            metrics.queueUtilizationPct = m.queueUtilizationPct;
+            callbackCopy(metrics);
+        }
+    );
 }
 
 + (void)logEvent:(NSString *)name payload:(NSString *)payloadJSON {
@@ -141,6 +186,9 @@ static std::mutex                   gStateMutex;
 + (void)shutdown {
     std::lock_guard<std::mutex> lock(gStateMutex);
     if (!gState) return;
+    if (gState->memoryObserver) {
+        [[NSNotificationCenter defaultCenter] removeObserver:gState->memoryObserver];
+    }
     gState->flushManager->stopTimer();
     gState.reset();
 }

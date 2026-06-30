@@ -25,6 +25,15 @@ final class DemoViewModel: ObservableObject {
 
         EventSDK.start(with: config)
 
+        EventSDK.setHealthCallback { [weak self] m in
+            DispatchQueue.main.async {
+                self?.appendLog(String(format:
+                    "health: queued=%lu dropped=%lu flushes=%lu failures=%lu latency=%.1fms sent=%luB util=%.0f%%",
+                    m.eventsQueued, m.eventsDropped, m.flushCount, m.transportFailures,
+                    m.lastFlushLatencyMs, m.bytesSent, m.queueUtilizationPct))
+            }
+        }
+
         // Transport is called on a background thread when the timer fires.
         // DispatchSemaphore bridges async URLSession to the synchronous C++ contract.
         EventSDK.setTransport { [weak self] url, body in
