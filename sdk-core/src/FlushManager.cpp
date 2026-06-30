@@ -1,4 +1,5 @@
 #include "FlushManager.h"
+#include <chrono>
 #include <sstream>
 
 namespace eventsdk {
@@ -24,9 +25,17 @@ FlushManager::~FlushManager() {
     stopTimer();
 }
 
+void FlushManager::setStore(EventStore* store) {
+    store_ = store;
+}
+
+void FlushManager::setHealthCallback(HealthCallback cb) {
+    healthCallback_ = std::move(cb);
+}
+
 void FlushManager::startTimer() {
     if (config_.flushIntervalSeconds <= 0) return;
-    if (timerThread_.joinable()) return;   // already running
+    if (timerThread_.joinable()) return;
 
     stopTimer_ = false;
     timerThread_ = std::thread([this]() {
@@ -36,7 +45,7 @@ void FlushManager::startTimer() {
                 std::chrono::seconds(config_.flushIntervalSeconds),
                 [this] { return stopTimer_; });
             if (stopped) break;
-            lock.unlock();   // release before potentially-slow transport call
+            lock.unlock();
             flush();
         }
     });
@@ -49,6 +58,10 @@ void FlushManager::stopTimer() {
     }
     timerCv_.notify_one();
     if (timerThread_.joinable()) timerThread_.join();
+}
+
+void FlushManager::setTransport(Transport transport) {
+    transport_ = std::move(transport);
 }
 
 void FlushManager::push(Event event) {
@@ -65,14 +78,19 @@ void FlushManager::push(Event event) {
     }
 }
 
-void FlushManager::setTransport(Transport transport) {
-    transport_ = std::move(transport);
+void FlushManager::loadPersistedEvents() {
+    if (!store_ || config_.deliveryMode != DeliveryMode::AtLeastOnce) return;
+    auto events = store_->load();
+    if (events.empty()) return;
+    for (auto& e : events) queue_.push(std::move(e));
+    store_->clear();
 }
 
 void FlushManager::flush(FlushCallback callback) {
     auto batch = queue_.drain(config_.batchSize);
     if (batch.empty()) {
         if (callback) callback(true, "");
+        emitHealth();
         return;
     }
 
@@ -82,9 +100,49 @@ void FlushManager::flush(FlushCallback callback) {
         return;
     }
 
+    // AtLeastOnce: write to disk before attempting network call.
+    // On crash between persist() and clear(), events are recovered via loadPersistedEvents().
+    if (config_.deliveryMode == DeliveryMode::AtLeastOnce && store_) {
+        store_->persist(batch);
+    }
+
     std::string body = buildBatchPayload(batch);
-    bool ok = transport_(config_.endpoint, body);
+
+    auto t0 = std::chrono::steady_clock::now();
+    bool ok  = transport_(config_.endpoint, body);
+    auto t1  = std::chrono::steady_clock::now();
+
+    lastFlushLatencyMs_ = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    ++flushCount_;
+
+    if (ok) {
+        bytesSent_ += static_cast<uint64_t>(body.size());
+        if (config_.deliveryMode == DeliveryMode::AtLeastOnce && store_) {
+            store_->clear();
+        }
+    } else {
+        ++transportFailures_;
+        // AtMostOnce: events already drained, silently lost.
+        // AtLeastOnce: events remain on disk; recovered on next loadPersistedEvents().
+    }
+
     if (callback) callback(ok, ok ? "" : "transport returned failure");
+    emitHealth();
+}
+
+void FlushManager::emitHealth() {
+    if (!healthCallback_) return;
+    HealthMetrics m;
+    m.eventsQueued        = queue_.size();
+    m.eventsDropped       = queue_.dropCount();
+    m.flushCount          = flushCount_;
+    m.transportFailures   = transportFailures_;
+    m.lastFlushLatencyMs  = lastFlushLatencyMs_;
+    m.bytesSent           = bytesSent_;
+    m.queueUtilizationPct = (config_.maxQueueCapacity > 0)
+        ? (static_cast<double>(queue_.size()) / config_.maxQueueCapacity * 100.0)
+        : 0.0;
+    healthCallback_(m);
 }
 
 std::size_t FlushManager::pendingCount() const {

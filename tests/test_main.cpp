@@ -300,6 +300,168 @@ void test_autoflush_threshold_zero_uses_batchsize() {
     ASSERT(flushCount == 1, "auto-flush at batchSize=3 when threshold=0");
 }
 
+// ── Drop counter ─────────────────────────────────────────────────────────────
+
+void test_queue_drop_counter_increments() {
+    EventQueue q(2);
+    q.push({"e1", "{}", 1});
+    q.push({"e2", "{}", 2});
+    ASSERT(q.dropCount() == 0, "no drops below capacity");
+
+    q.push({"e3", "{}", 3});  // evicts e1
+    ASSERT(q.dropCount() == 1, "drop counter = 1 after one eviction");
+
+    q.push({"e4", "{}", 4});  // evicts e2
+    ASSERT(q.dropCount() == 2, "drop counter = 2 after two evictions");
+}
+
+// ── HealthMetrics ─────────────────────────────────────────────────────────────
+
+void test_health_metrics_emitted_after_flush() {
+    auto cfg = makeConfig(5);
+    EventQueue q(cfg.maxQueueCapacity);
+    FlushManager fm(q, cfg);
+
+    HealthMetrics received;
+    bool cbCalled = false;
+    fm.setHealthCallback([&](const HealthMetrics& m) {
+        received = m;
+        cbCalled = true;
+    });
+
+    fm.setTransport([](const std::string&, const std::string& body) {
+        return true;
+    });
+
+    fm.push({"e1", "{}", 1});
+    fm.push({"e2", "{}", 2});
+    fm.flush();
+
+    ASSERT(cbCalled,                          "health callback invoked after flush");
+    ASSERT(received.flushCount == 1,          "flushCount = 1");
+    ASSERT(received.transportFailures == 0,   "no transport failures");
+    ASSERT(received.bytesSent > 0,            "bytesSent > 0 after successful flush");
+    ASSERT(received.lastFlushLatencyMs >= 0,  "latency is non-negative");
+    ASSERT(received.eventsQueued == 0,        "queue empty after flush");
+}
+
+void test_health_metrics_transport_failure() {
+    auto cfg = makeConfig(5);
+    EventQueue q(cfg.maxQueueCapacity);
+    FlushManager fm(q, cfg);
+
+    HealthMetrics received;
+    fm.setHealthCallback([&](const HealthMetrics& m) { received = m; });
+    fm.setTransport([](const std::string&, const std::string&) { return false; });
+
+    fm.push({"e1", "{}", 1});
+    fm.flush();
+
+    ASSERT(received.transportFailures == 1, "transportFailures = 1 after failure");
+    ASSERT(received.bytesSent == 0,         "bytesSent = 0 on failure");
+}
+
+void test_health_drop_count_reflected() {
+    auto cfg = makeConfig(5);
+    cfg.maxQueueCapacity = 2;
+    EventQueue q(2);
+    FlushManager fm(q, cfg);
+
+    HealthMetrics received;
+    fm.setHealthCallback([&](const HealthMetrics& m) { received = m; });
+    fm.setTransport([](const std::string&, const std::string&) { return true; });
+
+    q.push({"e1", "{}", 1});
+    q.push({"e2", "{}", 2});
+    q.push({"e3", "{}", 3});  // drops e1
+    fm.flush();
+
+    ASSERT(received.eventsDropped == 1,           "eventsDropped = 1 reflected in health");
+    ASSERT(received.queueUtilizationPct == 0.0,   "utilization 0 after flush");
+}
+
+// ── AtLeastOnce ──────────────────────────────────────────────────────────────
+
+void test_at_least_once_persists_before_send() {
+    setup_store_dir();
+    auto cfg = makeConfig(5);
+    cfg.deliveryMode = DeliveryMode::AtLeastOnce;
+
+    EventQueue q(cfg.maxQueueCapacity);
+    EventStore store(kTestDir);
+    store.clear();
+
+    FlushManager fm(q, cfg);
+    fm.setStore(&store);
+
+    bool transportCalled = false;
+    fm.setTransport([&](const std::string&, const std::string&) {
+        // at point of transport call, events must already be on disk
+        auto onDisk = store.load();
+        ASSERT(!onDisk.empty(), "events persisted to disk before transport call");
+        transportCalled = true;
+        return true;
+    });
+
+    fm.push({"buy", "{\"item\":\"sword\"}", 1000});
+    fm.flush();
+
+    ASSERT(transportCalled, "transport was called");
+    ASSERT(store.load().empty(), "store cleared after successful send");
+}
+
+void test_at_least_once_keeps_on_disk_on_failure() {
+    setup_store_dir();
+    auto cfg = makeConfig(5);
+    cfg.deliveryMode = DeliveryMode::AtLeastOnce;
+
+    EventQueue q(cfg.maxQueueCapacity);
+    EventStore store(kTestDir);
+    store.clear();
+
+    FlushManager fm(q, cfg);
+    fm.setStore(&store);
+    fm.setTransport([](const std::string&, const std::string&) { return false; });
+
+    fm.push({"buy", "{}", 1000});
+    fm.flush();
+
+    auto onDisk = store.load();
+    ASSERT(onDisk.size() == 1, "event remains on disk after transport failure");
+    ASSERT(onDisk[0].name == "buy", "correct event on disk");
+    store.clear();
+}
+
+void test_at_least_once_recover_on_restart() {
+    setup_store_dir();
+    auto cfg = makeConfig(5);
+    cfg.deliveryMode = DeliveryMode::AtLeastOnce;
+
+    EventQueue q(cfg.maxQueueCapacity);
+    EventStore store(kTestDir);
+    store.clear();
+
+    // Simulate a crash: event written to disk, never sent
+    store.persist({{"crash_event", "{}", 9999}});
+
+    FlushManager fm(q, cfg);
+    fm.setStore(&store);
+    fm.loadPersistedEvents();
+
+    ASSERT(fm.pendingCount() == 1, "crashed event recovered into queue on restart");
+
+    int flushCount = 0;
+    fm.setTransport([&](const std::string&, const std::string& body) {
+        ++flushCount;
+        ASSERT(body.find("crash_event") != std::string::npos, "recovered event in flush body");
+        return true;
+    });
+
+    fm.flush();
+    ASSERT(flushCount == 1,        "recovered event sent");
+    ASSERT(store.load().empty(),   "store cleared after successful send");
+}
+
 // ── main ─────────────────────────────────────────────────────────────────────
 
 int main() {
@@ -309,6 +471,7 @@ int main() {
     test_queue_drop_oldest_at_capacity();
     test_queue_partial_drain();
     test_queue_thread_safety();
+    test_queue_drop_counter_increments();
 
     test_store_persist_and_load();
     test_store_payload_with_special_chars();
@@ -322,6 +485,14 @@ int main() {
     test_autoflush_triggers_at_threshold();
     test_autoflush_disabled();
     test_autoflush_threshold_zero_uses_batchsize();
+
+    test_health_metrics_emitted_after_flush();
+    test_health_metrics_transport_failure();
+    test_health_drop_count_reflected();
+
+    test_at_least_once_persists_before_send();
+    test_at_least_once_keeps_on_disk_on_failure();
+    test_at_least_once_recover_on_restart();
 
     std::cout << '\n' << passed << " passed, " << failed << " failed\n";
     return failed > 0 ? 1 : 0;

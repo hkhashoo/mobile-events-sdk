@@ -9,8 +9,14 @@ void EventQueue::push(Event event) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (queue_.size() >= maxCapacity_) {
         queue_.pop();
+        ++dropsTotal_;
     }
     queue_.push(std::move(event));
+}
+
+uint64_t EventQueue::dropCount() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return dropsTotal_;
 }
 
 Batch EventQueue::drain(std::size_t maxCount) {
