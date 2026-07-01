@@ -15,5 +15,8 @@ target_include_directories(eventsdk PUBLIC sdk-core/src)
 add_executable(eventsdk_tests tests/test_main.cpp)
 target_link_libraries(eventsdk_tests PRIVATE eventsdk)
 
+add_executable(eventsdk_bench benchmarks/bench_main.cpp)
+target_link_libraries(eventsdk_bench PRIVATE eventsdk)
+
 enable_testing()
 add_test(NAME unit_tests COMMAND eventsdk_tests)

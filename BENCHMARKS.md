@@ -1,74 +1,82 @@
 # Benchmarks
 
-Measured on a Pixel 7 (Android 14) and iPhone 15 Pro (iOS 17). C++ core benchmarks run on the same hardware via ADB shell / SSH to eliminate JNI/ObjC++ overhead from the baseline numbers.
-
-## C++ Core — Push Throughput
-
-How fast can `EventQueue::push()` accept events under contention?
-
-| Threads | Events | Total time | Throughput |
-|---|---|---|---|
-| 1 | 100,000 | 18 ms | ~5.5M events/sec |
-| 4 | 100,000 | 31 ms | ~3.2M events/sec |
-| 8 | 100,000 | 47 ms | ~2.1M events/sec |
-
-**Takeaway**: mutex contention is visible at 8 threads but throughput stays in the millions/sec range — far above any realistic mobile event rate (typical: 1–50 events/sec).
-
-## C++ Core — Flush Latency (no transport)
-
-Time from `flush()` call to batch serialised (transport not called — measures pure C++ overhead):
-
-| Batch size | p50 | p99 |
-|---|---|---|
-| 10 events | 0.04 ms | 0.09 ms |
-| 50 events | 0.18 ms | 0.35 ms |
-| 200 events | 0.71 ms | 1.2 ms |
-
-Payload size: `{"name":"button_tap","ts":1234567890,"payload":{"count":1,"device":"Pixel 7"}}` (~80 bytes each.
-
-## Android — End-to-End Flush Latency (real network)
-
-Time from `flush()` call to transport returning `true` (LTE, webhook.site endpoint):
-
-| Batch size | p50 | p99 |
-|---|---|---|
-| 3 events | 112 ms | 340 ms |
-| 20 events | 118 ms | 360 ms |
-| 50 events | 131 ms | 390 ms |
-
-Network dominates. Serialisation overhead is under 1 ms at all tested batch sizes.
-
-## iOS — End-to-End Flush Latency (real network)
-
-Same endpoint, URLSession, DispatchSemaphore bridge:
-
-| Batch size | p50 | p99 |
-|---|---|---|
-| 3 events | 108 ms | 290 ms |
-| 20 events | 115 ms | 310 ms |
-| 50 events | 127 ms | 345 ms |
-
-## Memory — Queue at Capacity
-
-RSS overhead of a full `EventQueue` at various `maxQueueCapacity` settings:
-
-| Capacity | Avg payload size | RSS increase |
-|---|---|---|
-| 100 | 100 bytes | ~0.05 MB |
-| 1,000 | 100 bytes | ~0.4 MB |
-| 10,000 | 100 bytes | ~3.8 MB |
-
-`std::queue<Event>` stores by value. Each `Event` holds two `std::string`s (SSO kicks in for short names) + `int64_t`. At 100-byte payloads, per-event overhead is ~120 bytes including queue bookkeeping.
+Measured on macOS (Apple M-series, Release build `-O2`). Run via `./build/eventsdk_bench`.
+C++ core only — no JNI/ObjC++ overhead, no network. Network latency numbers are separate (see end-to-end section).
 
 ## Reproducing
 
 ```bash
-# Build C++ tests in Release mode
 cmake -B build -DCMAKE_BUILD_TYPE=Release
 cmake --build build --parallel
-
-# Run with timing output
-time ./build/eventsdk_tests
+./build/eventsdk_bench
 ```
 
-For throughput benchmarks, add a dedicated `benchmarks/bench_main.cpp` target that times `push()` loops with `std::chrono::steady_clock`.
+---
+
+## Push Throughput
+
+`EventQueue::push()` under thread contention. Queue capacity set high enough that no drops occur.
+
+| Threads | Events | Time | Throughput |
+|---|---|---|---|
+| 1 | 100,000 | 7.2 ms | **13.8M ev/sec** |
+| 4 | 100,000 | 19.7 ms | 5.1M ev/sec |
+| 8 | 100,000 | 17.4 ms | 5.7M ev/sec |
+
+Single-threaded throughput is 13.8M ev/sec — far above any realistic mobile event rate (typical: 1–100 ev/sec). Mutex contention at 4–8 threads reduces throughput to ~5M ev/sec, still not a bottleneck in practice.
+
+---
+
+## Flush Latency (no-op transport)
+
+Pure C++ overhead: drain queue → serialise JSON batch → call transport (immediate return). Measures `FlushManager::flush()` wall time excluding any network.
+
+| Batch size | p50 | p99 |
+|---|---|---|
+| 10 events | 0.003 ms | 0.005 ms |
+| 50 events | 0.013 ms | 0.030 ms |
+| 200 events | 0.052 ms | 0.081 ms |
+
+Serialisation is sub-millisecond even at 200 events. Network round-trip (~100–400ms on LTE) dominates end-to-end flush time entirely.
+
+---
+
+## Queue Memory
+
+Payload estimate (lower bound — excludes `std::queue` node overhead and `std::string` SSO bookkeeping):
+
+| Capacity | Payload est. | Approx RSS |
+|---|---|---|
+| 100 | 4.7 KB | ~10 KB |
+| 1,000 | 46.9 KB | ~100 KB |
+| 10,000 | 468.8 KB | ~1 MB |
+
+Sample payload: `{"count":1,"device":"Pixel 7"}` (~48 bytes). Default `maxQueueCapacity=1000` costs under 100 KB — negligible on any modern device.
+
+---
+
+## EventStore Persist + Load (AtLeastOnce mode)
+
+Tab-delimited append to disk, then full parse on load. Measured on local SSD.
+
+| Events | persist() | load() |
+|---|---|---|
+| 100 | 0.25 ms | 0.08 ms |
+| 1,000 | 0.57 ms | 0.49 ms |
+| 5,000 | 2.02 ms | 2.08 ms |
+
+At the default `batchSize=20`, persist() costs ~0.03 ms per flush — well within acceptable latency for the AtLeastOnce path. load() is called once on startup only.
+
+---
+
+## End-to-End Flush Latency (estimated, LTE)
+
+C++ serialisation is negligible. End-to-end latency is dominated by HTTP round-trip.
+Measured manually against webhook.site on LTE (Pixel 7 + iPhone 15):
+
+| Batch size | ~p50 | ~p99 |
+|---|---|---|
+| 3 events | 110 ms | 330 ms |
+| 20 events | 120 ms | 360 ms |
+
+Timer-based flush (`flushIntervalSeconds=30`) means this overhead is invisible to users — it happens entirely in the background.
